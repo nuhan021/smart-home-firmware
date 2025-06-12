@@ -2,11 +2,11 @@
 
 My_local_storage local_storage;
 
-void My_pin::updatePinState(const int pinMapping[15], String pin, bool state, String network)
+void My_pin::updatePinState(String pin, bool state, String network)
 {
 
     int pinNumber = pin.substring(4).toInt(); // cut all string before index 4 -> pin_1 will be {int 1}
-    if (pinNumber >= 1 && pinNumber <= 15)    // check pinNumber is under 1 to 15
+    if (pinNumber >= 1 && pinNumber <= 16)    // check pinNumber is under 1 to 15
     {
         if (network == "local")
         {
@@ -18,6 +18,8 @@ void My_pin::updatePinState(const int pinMapping[15], String pin, bool state, St
             String jsonString; // convert to string
 
             serializeJson(doc, jsonString);
+            Serial.print("My Json: ");
+            Serial.println(jsonString);
 
             if (my_wifi.get_wifi_status() == 3)
             {
@@ -26,17 +28,43 @@ void My_pin::updatePinState(const int pinMapping[15], String pin, bool state, St
             }
         }
 
-        int pinIndex = pinNumber - 1;
-        local_storage.savePinState(pinIndex, state);                      // store the value in local databasae
-        bool localStoragePinState = local_storage.loadPinState(pinIndex); // get the value from local database
-        digitalWrite(pinMapping[pinIndex], localStoragePinState);         // write the value to the exact pin
+        // int pinIndex = pinNumber - 1;
+        // local_storage.savePinState(pinIndex, state);                      // store the value in local databasae
+        // bool localStoragePinState = local_storage.loadPinState(pinIndex); // get the value from local database
+        // digitalWrite(pinMapping[pinIndex], localStoragePinState);         // write the value to the exact pin
+        // পূর্ববর্তী স্টেট লোড করা
+        preferences.begin("pin_states", false);
+
+        String pinState1 = preferences.getString("pinState1", "00000000");
+        String pinState2 = preferences.getString("pinState2", "00000000");
+
+        if (pinNumber < 9) {
+            pinState1.setCharAt(pinNumber - 1, state ? '1' : '0'); // নির্দিষ্ট ইনডেক্স পরিবর্তন করুন
+            preferences.putString("pinState1", pinState1); // নতুন স্টেট সংরক্ষণ করুন
+        } 
+        else {
+            pinState2.setCharAt(pinNumber - 9, state ? '1' : '0');
+            preferences.putString("pinState2", pinState2);
+        }
+        #define DATA_PIN 23   // SER (DS)
+        #define CLOCK_PIN 18  // SRCLK
+        #define LATCH_PIN 5   // RCLK
+
+        uint8_t shiftRegisterValue1 = strtol(pinState1.c_str(), NULL, 2); // Convert binary string to uint8_t
+        uint8_t shiftRegisterValue2 = strtol(pinState2.c_str(), NULL, 2); // Convert binary string to uint8_t
+
+        digitalWrite(LATCH_PIN, LOW);  
+        shiftOut(DATA_PIN, CLOCK_PIN, MSBFIRST, shiftRegisterValue2);
+        shiftOut(DATA_PIN, CLOCK_PIN, MSBFIRST, shiftRegisterValue1);
+        digitalWrite(LATCH_PIN, HIGH);
+        preferences.end();
     }
 }
 
 void My_pin::updatePwmValue(const int pwmMapping[4], String pin, int value, String network)
 {
-    int pinNumber = pin.substring(4).toInt(); // cut all string before index 4 -> pwm_1 will be {int 1}
-    if (pinNumber >= 1 && pinNumber <= 4)     // check pinNumber is under 1 to 4
+    int pinNumber = pin.substring(4).toInt(); // pin_1 → 1
+    if (pinNumber >= 1 && pinNumber <= 4)     // Ensure pinNumber is within valid range
     {
         if (network == "local")
         {
@@ -46,25 +74,29 @@ void My_pin::updatePwmValue(const int pwmMapping[4], String pin, int value, Stri
             doc[pin] = value;
 
             String jsonString;
-
             serializeJson(doc, jsonString);
+
+            Serial.print("The json is: ");
+            Serial.println(jsonString);
 
             if (my_wifi.get_wifi_status() == 3)
             {
-                // if wifi is ok then update the remote database
-                client.send(jsonString);
+                client.send(jsonString); // Send updated value to server
+                client.end();
             }
         }
 
-        int pin = pinNumber - 1;
-        String key = "pwm_" + String(pin);
-        local_storage.savePwmValue(key, value);         // store the value in local databasae
-        int pwmValue = local_storage.loadPwmValue(key); // get the value from local database
-        ledcWrite(pwmMapping[pin], pwmValue);           // write the value to the exact pin
+        int pwmIndex = pinNumber - 1;
+
+        String key = "pwm_" + String(pwmIndex);
+        local_storage.savePwmValue(key, value);  // Store value locally
+        int pwmValue = local_storage.loadPwmValue(key); // Retrieve saved value
+        ledcWrite(pwmMapping[pwmIndex], pwmValue);  // Apply to PWM pin
     }
 }
 
-void My_pin::processPinData(const int pinMapping[15], const int pwmMapping[4], String jsonString)
+
+void My_pin::processPinData(const int pwmMapping[4], String jsonString)
 {
     DynamicJsonDocument doc(256);
 
@@ -87,9 +119,10 @@ void My_pin::processPinData(const int pinMapping[15], const int pwmMapping[4], S
             String pinName = kv.key().c_str();     // extract key
             bool pinValue = kv.value().as<bool>(); // extract value
 
-            updatePinState(pinMapping, pinName, pinValue, networkString);
+            updatePinState(pinName, pinValue, networkString);
         }
     }
+
 
     for (JsonObject obj : pwmDataArray) // grab object from pwmDataArray
     {

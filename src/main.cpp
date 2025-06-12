@@ -12,17 +12,13 @@
 #include <WiFi.h>
 #include <Wire.h>
 #include <nvs.h>
+#include<ESPmDNS.h>
 
 
-
-
-#define SCREEN_WIDTH 128
-#define SCREEN_HEIGHT 64
-#define OLED_RESET -1
-#define SCREEN_ADDRESS 0x3C
 
 const char *testHost = "www.google.com"; // ping server
 My_wifi my_wifi(testHost);        // My_wifi class object
+WiFiUDP udp;
 
 using namespace websockets;
 WebsocketsClient client; // websocket class object
@@ -31,32 +27,46 @@ My_pin my_pin;                     // My_pin class object
 My_local_storage my_local_storage; // My_local_storage class object
 AsyncWebServer server(80);         // web server port
 
-Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET); // initializing display class
 
 // websocket api
-String base_url = "ws://192.168.0.123:8000/ws/socket-server/?api-key=";
+String base_url = "ws://192.168.0.200:8000/ws/socket-server/?api-key";
 String websocket_url = "";        // base_url + api-key = websocket_url
 bool websocket_reconnect = false; // websocket reconnect flag
 
-const int pinMapping[15] = {2, 3, 4, 5, 13, 15, 16, 17, 18, 19, 23, 27, 32, 33, 0}; // relay control pins
-const int total_relay_control_pin = sizeof(pinMapping) / sizeof(pinMapping[0]);     // total relay control pin
+
 
 const int fanPins[4] = {12, 14, 25, 26}; // fan control pins
 const int freq = 10000;                  // frequency 10000 Hz
 const int resolution = 8;                // duty cicle 0-255
 int channels[4] = {0, 1, 2, 3};          // pwm channels
 
-const int DOWN_BUTTON = 34; // down or change button
+const int RESET_BUTTON = 34; // down or change button
 const int OK_BUTTON = 39;   // ok button
 
-const char *menuItems[] = {"Reset WiFi", "Local IP", "Reboot", "Reset Device"}; // menu item
-int totalMenuItems = sizeof(menuItems) / sizeof(menuItems[0]);                  // size of the menuItem array
+
 int selectedItem = 0;                                                           // menu selected item
 bool inMenu = true;                                                             // inside menu or not
 
 bool credentialsReceived = false; // Flag to track if credentials are received
 
-static const unsigned char PROGMEM image_menu_arrow_down_left_bits[] = {0x80, 0xc0, 0xe0, 0xf0}; // bitmap for arrow icon
+// 74HC595 SHIFT REGISTER CONNECTION
+#define DATA_PIN 23   // SER (DS)
+#define CLOCK_PIN 18  // SRCLK
+#define LATCH_PIN 5   // RCLK
+
+String pinState1 = "00000000";
+String pinState2 = "00000000";
+
+
+
+void updateShiftOutput(uint8_t shiftRegisterValue1, uint8_t shiftRegisterValue2) {
+    digitalWrite(LATCH_PIN, LOW);  
+    shiftOut(DATA_PIN, CLOCK_PIN, MSBFIRST, shiftRegisterValue2);
+    shiftOut(DATA_PIN, CLOCK_PIN, MSBFIRST, shiftRegisterValue1);
+    digitalWrite(LATCH_PIN, HIGH);
+}
+
+
 
 // whe websocket get new message this function call automatically,
 // for handling and manupulation data
@@ -78,7 +88,7 @@ void onMessageCallback(WebsocketsMessage message)
     // check if websocket reconnect flag is false
     {
         // call processPinData function to process data
-        my_pin.processPinData(pinMapping, channels, msg);
+        my_pin.processPinData(channels, msg);
     }
     else
     {
@@ -116,14 +126,18 @@ void save_wifi_server()
             String req_ssid = request->arg("ssid");
             String req_password = request->arg("password");
             String api_key = request->arg("api-key");
+            
 
             request->send(200, "text/plain", "Credentials Received");
-            delay(2000);
 
             // store (ssid, password & api_key) in local database
             preferences.putString("ssid", req_ssid);
             preferences.putString("password", req_password);
             preferences.putString("api-key" , api_key);
+
+            Serial.println(req_ssid);
+            Serial.println(req_password);
+            Serial.println(api_key);
 
             preferences.end(); // close preferences
 
@@ -143,94 +157,37 @@ void clearPreferences(const char *namespaceName)
     preferences.end();
 }
 
-// this function draw the device menu
-void drawMenu()
-{
-    display.clearDisplay();
-    display.setTextSize(1);
-    display.setTextColor(WHITE);
-
-    for (int i = 0; i < totalMenuItems; i++)
-    {
-        if (i == selectedItem) // if counter = selected menu item
-        {                      // draw a arrow icon right of the menu item
-            display.drawBitmap(100, 10 + (i * 15), image_menu_arrow_down_left_bits, 8, 8, WHITE);
-        }
-
-        display.setCursor(8, 10 + (i * 15));
-        display.println(menuItems[i]);
-    }
-
-    display.display();
-}
-
-// this function draw details for menu item
-void executeSelectedItem()
-{
-    inMenu = false;
-    display.clearDisplay();
-    display.setTextSize(1);
-    display.setTextColor(SSD1306_WHITE);
-    display.setCursor(3, 20);
-
-    if (selectedItem == 0)
-    {
-        display.println("Reseting WiFi...");
-        clearPreferences("credentials");
-        ESP.restart();
-    }
-    else if (selectedItem == 1)
-    { // display local network ip
-        display.println("Local IP:");
-        display.setCursor(3, 40);
-        display.println(WiFi.localIP());
-    }
-    else if (selectedItem == 2)
-    { // restart device
-        display.println("Restarting...");
-        display.display();
-        delay(2000);
-        ESP.restart();
-    }
-    else if (selectedItem == 3)
-    { // reset total device
-        clearPreferences("pin_states");
-        clearPreferences("initialized");
-        clearPreferences("credentials");
-        ESP.restart();
-    }
-
-    display.display();
-    delay(300);
-}
 
 void setup()
 {
 
-    // Serial.begin(115200);
 
-    pinMode(DOWN_BUTTON, INPUT); // set DOWN_BUTTON as INPUT
-    pinMode(OK_BUTTON, INPUT);   // set OK_BUTTON as INPUT
+
+    Serial.begin(115200);  // অথবা 9600, তবে 115200 দ্রুত ও জনপ্রিয়
+
+    Serial.println('--------------------------------Hello world');
+    delay(1000);
+
+    pinMode(DATA_PIN, OUTPUT);
+    pinMode(LATCH_PIN, OUTPUT);
+    pinMode(CLOCK_PIN, OUTPUT);
+
+    pinMode(RESET_BUTTON, INPUT); // set RESET_BUTTON as INPUT
 
     // while booting if DOWN_BUTTON is press then device will reset all the settings
-    if (digitalRead(DOWN_BUTTON) == 1)
+    if (digitalRead(RESET_BUTTON) == 1)
     {
         // clearing all the data from local database or reseting the device
         clearPreferences("pin_states");
         clearPreferences("initialized");
+        clearPreferences("pinState1");
+        clearPreferences("pinState2");
         clearPreferences("credentials");
-        ESP.restart();
         delay(300);
+        ESP.restart();
+        
     }
 
-    // initializing the display
-    if (!display.begin(SSD1306_SWITCHCAPVCC, SCREEN_ADDRESS))
-    {
-        // if no display found , automatically goes to inifinity loop
-        for (;;)
-            ;
-    }
-    display.clearDisplay();
 
     preferences.begin("pin_states", false); // open pin_states database as read/write mode
 
@@ -256,10 +213,13 @@ void setup()
         delay(3000);
 
         // Set all pins to false (first time only)
-        for (int i = 0; i < total_relay_control_pin; i++)
-        {
-            preferences.putBool(String(i).c_str(), false);
-        }
+        // for (int i = 0; i < total_relay_control_pin; i++)
+        // {
+        //     preferences.putBool(String(i).c_str(), false);
+        // }
+
+        preferences.putString("pinState1", pinState1);
+        preferences.putString("pinState2", pinState2);
 
         // set all the pwm pin to 0 (first time only)
         for (int i = 0; i < 4; i++)
@@ -269,18 +229,34 @@ void setup()
         }
 
         preferences.putBool("initialized", true); // Mark as initialized
+        
 
         preferences.end();
     }
 
     // set up ledPins as output and collect every
     // pin state from local storage and write the value acording to the pin
-    for (int i = 0; i < total_relay_control_pin; i++)
-    {
-        bool pinState = my_local_storage.loadPinState(i); // get pin state -> true/false
-        pinMode(pinMapping[i], OUTPUT);                   // set pin mode as output
-        digitalWrite(pinMapping[i], pinState);            // write the pin state -> true = ON, false = OFF
-    }
+    // for (int i = 0; i < total_relay_control_pin; i++)
+    // {
+    //     bool pinState = my_local_storage.loadPinState(i); // get pin state -> true/false
+    //     // pinMode(pinMapping[i], OUTPUT);                   // set pin mode as output
+    //     // digitalWrite(pinMapping[i], pinState);            // write the pin state -> true = ON, false = OFF
+
+    //     updateShiftRegister(i, pinState);
+    // }
+
+
+    
+
+
+    preferences.begin("pin_states", false);
+    String pinState1 = preferences.getString("pinState1");
+    String pinState2 = preferences.getString("pinState2");
+
+    uint8_t shiftRegisterValue1 = strtol(pinState1.c_str(), NULL, 2); // Convert binary string to uint8_t
+    uint8_t shiftRegisterValue2 = strtol(pinState2.c_str(), NULL, 2);
+
+    updateShiftOutput(shiftRegisterValue1, shiftRegisterValue2);
 
     // set up pwm pins
     // collect pwm value from the local storage and write them according to the pin
@@ -301,9 +277,14 @@ void setup()
     String api_key_str = preferences.getString("api-key", "");
 
     websocket_url = base_url + api_key_str; // merge base_url and api_key for make final websocket url
+    Serial.println(websocket_url);
     preferences.end();
 
+
+
     my_wifi.my_wifi_connect(ssid_str.c_str(), password_str.c_str()); // connect WiFi using ssid and password
+
+    Serial.println(WiFi.localIP());
 
     client.onMessage(onMessageCallback); // set websocket onMessage method
 
@@ -339,24 +320,39 @@ void setup()
     //     }
     // }
 
+
+
     // start a server at local ip for control device without internet or in home network
     server.on("/control", HTTP_POST, [](AsyncWebServerRequest *request) {}, NULL, [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total)
               {
                   
                   String jsonString = String((char*)data); // Convert uint8_t* to String
-                  my_pin.processPinData(pinMapping, channels, jsonString); // call processPinData to process json data
+                  my_pin.processPinData(channels, jsonString); // call processPinData to process json data
                   request->send(200, "application/json", "{\"status\":\"success\"}"); });
 
     server.begin(); // start the server
 
-    drawMenu(); // draw the device menu
+    Serial.println(WiFi.localIP());
+    Serial.println(WiFi.localIP());
+    Serial.println(WiFi.localIP());
+    Serial.println(WiFi.localIP());
+    Serial.println(WiFi.localIP());
+    Serial.println(WiFi.localIP());
+    Serial.println(WiFi.localIP());
+    Serial.println(WiFi.localIP());
+    Serial.println(WiFi.localIP());
+    Serial.println(WiFi.localIP());
+
+
 }
 
 unsigned long startWifiCheck = millis();
 unsigned long startWebsocketCheck = millis();
+unsigned long startIpBroadcusting = millis();
 
 const long wifiCheckInterval = 10000;
 const long websocketCheckInterval = 20000;
+const long iPBroadcastInterval = 2000;
 
 // helper functon to call my_wifi.my_wifi_internet_status
 void checkWifiStatus(void *pvParameters)
@@ -365,35 +361,7 @@ void checkWifiStatus(void *pvParameters)
     vTaskDelete(NULL);
 }
 
-void downButtonPress()
-{
-    if (digitalRead(DOWN_BUTTON) == 1)
-    { // if down button is pressed
-        // move arrow icon to the next menu
-        selectedItem++;
-        if (selectedItem >= totalMenuItems)
-            selectedItem = 0;
-        drawMenu();
-        delay(300); // for debounce
-    }
-}
 
-void okButtonPress()
-{
-    if (digitalRead(OK_BUTTON) == 1)
-    {
-        if (inMenu)
-        {
-            executeSelectedItem();
-        }
-        else
-        {
-            inMenu = true; // go back from all menu
-            drawMenu();
-        }
-        delay(300); // fro debounce
-    }
-}
 
 void connectWebsocket()
 {
@@ -426,8 +394,19 @@ void connectWebsocket()
 
 void loop()
 {
-    downButtonPress(); // for getting down button press
-    okButtonPress();   // for getting ok button press
+
+
+    if (millis() - startIpBroadcusting >= iPBroadcastInterval) {
+    Serial.println(WiFi.localIP());
+        if (WiFi.status() == WL_CONNECTED) {
+            String ipMessage = "smart_home:" + WiFi.localIP().toString();
+            udp.begin(4210);
+            udp.beginPacket("255.255.255.255", 4210);  // UDP Broadcast
+            udp.write(reinterpret_cast<const uint8_t*>(ipMessage.c_str()), ipMessage.length());
+            udp.endPacket();
+            startIpBroadcusting = millis();
+        }
+    }
 
     // calling checkWifiStatus function in core 0 to check wifi status without block other code
     if (millis() - startWifiCheck >= wifiCheckInterval)

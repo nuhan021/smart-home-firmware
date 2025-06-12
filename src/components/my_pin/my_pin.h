@@ -17,8 +17,8 @@ class My_pin
 {
 
 public:
-    void processPinData(const int pinMapping[15], const int pwmMapping[4], String jsonString);
-    void updatePinState(const int pinMapping[15], String pin, bool state, String network = "");
+    void processPinData(const int pwmMapping[4], String jsonString);
+    void updatePinState(String pin, bool state, String network = "");
     void updatePwmValue(const int pwmMapping[4], String pin, int value, String network = "");
     void updateWhileReconnectWebsocket();
 };

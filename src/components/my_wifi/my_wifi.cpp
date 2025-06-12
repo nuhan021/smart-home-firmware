@@ -43,16 +43,16 @@ void My_wifi::my_wifi_internet_status(void *pvParameters)
         return;
     }
 
-    WiFiClient client;
-    if (!client.connect(google_dns, 80))
-    {
-        // if there is no internet
-        wifi_status = WL_DISCONNECTED;
-        vTaskDelete(NULL);
-        return;
-    }
+    // WiFiClient client;
+    // if (!client.connect(google_dns, 80))
+    // {
+    //     // if there is no internet
+    //     wifi_status = WL_DISCONNECTED;
+    //     vTaskDelete(NULL);
+    //     return;
+    // }
 
-    client.stop();
+    // client.stop();
 
     // if everything is OK
     wifi_status = WL_CONNECTED;
