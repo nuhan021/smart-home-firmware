@@ -14,6 +14,8 @@
 #include <nvs.h>
 #include<ESPmDNS.h>
 
+// initial commit
+
 
 
 const char *testHost = "www.google.com"; // ping server
